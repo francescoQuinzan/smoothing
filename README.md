@@ -1,9 +1,9 @@
-# Certified Adversarial Robustness via Randomized Smoothing
+# Randomized Smoothing with Anisotropic Gaussian Noise
 
-This repository contains code and trained models for the paper [Certified Adversarial Robustness via Randomized Smoothing](https://arxiv.org/abs/1902.02918) by [Jeremy Cohen](http://cs.cmu.edu/~jeremiac), Elan Rosenfeld, and [Zico Kolter](http://zicokolter.com).
+> ⚠️ **Notice**: This repository is a fork of the original work by Jeremy Cohen, Elan Rosenfeld, and Zico Kolter, associated with the paper [*Certified Adversarial Robustness via Randomized Smoothing*](https://arxiv.org/abs/1902.02918).  
+> The original repository can be found [here](https://github.com/locuslab/smoothing).
 
-Randomized smoothing is a **provable** adversarial defense in L2 norm which **scales to ImageNet.**
-It's also SOTA on the smaller datasets like CIFAR-10 and SVHN where other provable L2-robust classifiers are viable.
+This fork extends the original codebase to support **anisotropic Gaussian noise** and allows for experimentation with **different smoothing distributions** beyond the standard isotropic Gaussian.
 
 ## How does it work?
 
