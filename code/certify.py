@@ -1,20 +1,35 @@
 # evaluate a smoothed classifier on a dataset
 import argparse
 import os
-import setGPU
+#import setGPU
 from datasets import get_dataset, DATASETS, get_num_classes
 from core import Smooth
 from time import time
 import torch
 import datetime
-from architectures import get_architecture
+
+from architectures import get_architecture, CIFAR_ARCHITECTURES, IMAGENET_ARCHITECTURES
+from smoothing_distribution import GaussianSampler, GaussianImageSampler
+from attacks import get_adversarial_dataset
+
+DEVICE = torch.device("cuda")
+
+CLASSIFIER_CHOICES = {
+    "cifar10": CIFAR_ARCHITECTURES,
+    "imagenet": IMAGENET_ARCHITECTURES,
+}
 
 parser = argparse.ArgumentParser(description='Certify many examples')
 parser.add_argument("dataset", choices=DATASETS, help="which dataset")
-parser.add_argument("base_classifier", type=str, help="path to saved pytorch model of base classifier")
+
+args, remaining_args = parser.parse_known_args()
+
+parser.add_argument("base_classifier", choices=CLASSIFIER_CHOICES[args.dataset], type=str, help="which classifier")
+parser.add_argument("attack", type=str, help="attack type")
+parser.add_argument("sampler", type=str, help="type of smoothing distribution")
 parser.add_argument("sigma", type=float, help="noise hyperparameter")
-parser.add_argument("outfile", type=str, help="output file")
-parser.add_argument("--batch", type=int, default=1000, help="batch size")
+parser.add_argument("--proportion", type=float, default=0.5, help="proportion of adverasrial examples used for training")
+parser.add_argument("--batch", type=int, default=250, help="batch size")
 parser.add_argument("--skip", type=int, default=1, help="how many examples to skip")
 parser.add_argument("--max", type=int, default=-1, help="stop after this many examples")
 parser.add_argument("--split", choices=["train", "test"], default="test", help="train or test set")
@@ -24,16 +39,35 @@ parser.add_argument("--alpha", type=float, default=0.001, help="failure probabil
 args = parser.parse_args()
 
 if __name__ == "__main__":
+    
     # load the base classifier
-    checkpoint = torch.load(args.base_classifier)
+    base_classifier_file =  'models/base_classifiers/' + args.base_classifier + '_' + args.dataset + '_' + args.attack + '_checkpoint.pth.tar'
+    checkpoint = torch.load(base_classifier_file,map_location=DEVICE)
     base_classifier = get_architecture(checkpoint["arch"], args.dataset)
     base_classifier.load_state_dict(checkpoint['state_dict'])
+    base_classifier = base_classifier.to('mps')
+    
+    # you need to put an exception here, in case the base classifier does not exist
+    # you need to make sure that the attacks, architectures and datasets are correct
 
+    # choose sampling method for the smoothing distribution 
+    if args.sampler=="gaussian" :
+        sampler = GaussianSampler(args.sigma)
+
+    elif args.sampler=="gen" :
+        dataset = get_adversarial_dataset(model_name=args.base_classifier, dataset_name=args.dataset, dataset_split='test', attack_type=args.attack, proportion= args.proportion)
+        sampler = GaussianImageSampler(dataset, args.sigma)
+        
+    else :
+        print(f"Unrecognized attack type '{args.sampler}'.")
+        
     # create the smooothed classifier g
-    smoothed_classifier = Smooth(base_classifier, get_num_classes(args.dataset), args.sigma)
+    smoothed_classifier = Smooth(base_classifier, get_num_classes(args.dataset), sampler)
 
     # prepare output file
-    f = open(args.outfile, 'w')
+    output_path = 'results'
+    if not os.path.exists(output_path): os.mkdir(output_path)
+    f = open(output_path +'/' + args.base_classifier + '_' + args.dataset + '_' + args.attack + '_' + args.sampler + '_' + str(args.sigma) + '_' + str(args.batch) + '_' + str(args.alpha) + '_certify.csv', 'w')
     print("idx\tlabel\tpredict\tradius\tcorrect\ttime", file=f, flush=True)
 
     # iterate through the dataset
@@ -49,8 +83,9 @@ if __name__ == "__main__":
         (x, label) = dataset[i]
 
         before_time = time()
+        
         # certify the prediction of g around x
-        x = x.cuda()
+        x = x.to(DEVICE)
         prediction, radius = smoothed_classifier.certify(x, args.N0, args.N, args.alpha, args.batch)
         after_time = time()
         correct = int(prediction == label)

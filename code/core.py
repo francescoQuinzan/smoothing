@@ -1,9 +1,10 @@
 import torch
-from scipy.stats import norm, binom_test
+from scipy.stats import norm, binomtest
 import numpy as np
 from math import ceil
 from statsmodels.stats.proportion import proportion_confint
 
+DEVICE = torch.device("cuda")
 
 class Smooth(object):
     """A smoothed classifier g """
@@ -11,17 +12,20 @@ class Smooth(object):
     # to abstain, Smooth returns this int
     ABSTAIN = -1
 
-    def __init__(self, base_classifier: torch.nn.Module, num_classes: int, sigma: float):
+    def __init__(self, base_classifier: torch.nn.Module, num_classes: int, sampler):
         """
         :param base_classifier: maps from [batch x channel x height x width] to [batch x num_classes]
         :param num_classes:
-        :param sigma: the noise level hyperparameter
+        :param sampler: the sampling routine used for smoothing
+
         """
         self.base_classifier = base_classifier
         self.num_classes = num_classes
-        self.sigma = sigma
+        self.sampler = sampler 
+        self.sigma = sampler.sigma
 
     def certify(self, x: torch.tensor, n0: int, n: int, alpha: float, batch_size: int) -> (int, float):
+        
         """ Monte Carlo algorithm for certifying that g's prediction around x is constant within some L2 radius.
         With probability at least 1 - alpha, the class returned by this method will equal g(x), and g's prediction will
         robust within a L2 ball of radius R around x.
@@ -34,16 +38,22 @@ class Smooth(object):
         :return: (predicted class, certified radius)
                  in the case of abstention, the class will be ABSTAIN and the radius 0.
         """
+
         self.base_classifier.eval()
+
         # draw samples of f(x+ epsilon)
         counts_selection = self._sample_noise(x, n0, batch_size)
+
         # use these samples to take a guess at the top class
         cAHat = counts_selection.argmax().item()
+
         # draw more samples of f(x + epsilon)
         counts_estimation = self._sample_noise(x, n, batch_size)
+
         # use these samples to estimate a lower bound on pA
         nA = counts_estimation[cAHat].item()
         pABar = self._lower_confidence_bound(nA, n, alpha)
+        
         if pABar < 0.5:
             return Smooth.ABSTAIN, 0.0
         else:
@@ -68,7 +78,7 @@ class Smooth(object):
         top2 = counts.argsort()[::-1][:2]
         count1 = counts[top2[0]]
         count2 = counts[top2[1]]
-        if binom_test(count1, count1 + count2, p=0.5) > alpha:
+        if binomtest(count1, count1 + count2, p=0.5) > alpha:
             return Smooth.ABSTAIN
         else:
             return top2[0]
@@ -79,17 +89,18 @@ class Smooth(object):
         :param x: the input [channel x width x height]
         :param num: number of samples to collect
         :param batch_size:
+        :param sampler: the sampler used for the distribution
         :return: an ndarray[int] of length num_classes containing the per-class counts
         """
+
         with torch.no_grad():
+
             counts = np.zeros(self.num_classes, dtype=int)
             for _ in range(ceil(num / batch_size)):
                 this_batch_size = min(batch_size, num)
                 num -= this_batch_size
-
-                batch = x.repeat((this_batch_size, 1, 1, 1))
-                noise = torch.randn_like(batch, device='cuda') * self.sigma
-                predictions = self.base_classifier(batch + noise).argmax(1)
+                smoothed_input = self.sampler.sample_smoothed_images(x, this_batch_size)
+                predictions = self.base_classifier(smoothed_input).argmax(1)
                 counts += self._count_arr(predictions.cpu().numpy(), self.num_classes)
             return counts
 
